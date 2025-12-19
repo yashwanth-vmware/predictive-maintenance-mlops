@@ -1,29 +1,23 @@
-# Hugging Face Space - Docker runtime (Streamlit)
-# Serves Streamlit on port 7860
+# Use a minimal base image with Python 3.9 installed
+FROM python:3.9
 
-FROM python:3.10-slim
-
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
-
+# Set the working directory inside the container to /app
 WORKDIR /app
 
-# System deps (safe baseline; add build-essential only if you compile libs)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git \
-    ca-certificates \
- && rm -rf /var/lib/apt/lists/*
+# Copy all files from the current directory on the host to the container's /app directory
+COPY . .
 
-# Install dependencies first (better layer caching)
-COPY requirements.txt /app/requirements.txt
-RUN pip install --upgrade pip && pip install -r /app/requirements.txt
+# Install Python dependencies listed in requirements.txt
+RUN pip3 install -r requirements.txt
 
-# Copy everything (so imports/modules/assets work)
-COPY . /app
+RUN useradd -m -u 1000 user
+USER user
+ENV HOME=/home/user \
+	PATH=/home/user/.local/bin:$PATH
 
-EXPOSE 7860
+WORKDIR $HOME/app
 
-# Streamlit must listen on 0.0.0.0:7860 inside Spaces
-CMD ["streamlit", "run", "app.py", "--server.address=0.0.0.0", "--server.port=7860", "--server.headless=true", "--server.enableCORS=false", "--server.enableXsrfProtection=false"]
-#CMD ["streamlit", "run", "maintenance_predictive/deployment/app.py", "--server.address=0.0.0.0", "--server.port=7860", "--server.headless=true", "--server.enableCORS=false", "--server.enableXsrfProtection=false"]
+COPY --chown=user . $HOME/app
+
+# Define the command to run the Streamlit app on port "8501" and make it accessible externally
+CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.enableXsrfProtection=false"]
