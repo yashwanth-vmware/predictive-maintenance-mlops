@@ -1,16 +1,9 @@
 """
 Deploy Docker-based Hugging Face Space files to a Hugging Face Space repo.
 
-Option 1 design:
-- Single Space repo is the source of truth
-- Dockerfile, requirements.txt, app.py are uploaded to repo ROOT
-- Works in Colab, local Python, and GitHub Actions
-
-Required:
-- HF_TOKEN (Colab Secrets or env var)
-
-Optional:
-- HF_SPACE_ID (env var). Defaults to Yashwanthsairam/predictive-maintenance-mlops
+Fix:
+- If Dockerfile/requirements.txt/app.py are not in DEPLOY_DIR, fallback to repo root.
+- Uploads files to Space repo ROOT (required for Docker Spaces).
 """
 
 import os
@@ -19,7 +12,6 @@ from typing import List, Tuple
 
 from huggingface_hub import HfApi, create_repo
 
-# Hub compatibility (older versions)
 try:
     from huggingface_hub.utils import HfHubHTTPError
 except Exception:
@@ -27,23 +19,16 @@ except Exception:
         pass
 
 
-# ----------------------------
-# Defaults (Option 1)
-# ----------------------------
 DEFAULT_SPACE_ID = "Yashwanthsairam/predictive-maintenance-mlops"
 DEFAULT_DEPLOY_DIR = "maintenance_predictive/deployment"
 
 
-# ----------------------------
-# Token handling (Option A)
-# ----------------------------
 def get_hf_token() -> str:
-    # 1) env var
     token = (os.getenv("HF_TOKEN") or "").strip()
     if token:
         return token
 
-    # 2) Colab Secrets fallback
+    # Colab fallback
     try:
         from google.colab import userdata
         token = (userdata.get("HF_TOKEN") or "").strip()
@@ -54,25 +39,15 @@ def get_hf_token() -> str:
         pass
 
     raise EnvironmentError(
-        "❌ HF_TOKEN not found. Add it as:\n"
-        "- Colab: Secrets → HF_TOKEN\n"
-        "- GitHub Actions: secrets.HF_TOKEN\n"
-        "- Local: export HF_TOKEN=..."
+        "❌ HF_TOKEN not found. Set it via GitHub Secrets (HF_TOKEN) or locally."
     )
 
 
 def get_space_id() -> str:
-    """
-    GitHub Actions vars.HF_SPACE_ID may exist but be empty.
-    Always fallback safely.
-    """
     space_id = (os.getenv("HF_SPACE_ID") or "").strip()
     return space_id if space_id else DEFAULT_SPACE_ID
 
 
-# ----------------------------
-# Space validation
-# ----------------------------
 def ensure_space_exists(api: HfApi, space_id: str, token: str) -> None:
     try:
         api.repo_info(repo_id=space_id, repo_type="space")
@@ -94,44 +69,50 @@ def ensure_space_exists(api: HfApi, space_id: str, token: str) -> None:
         raise RuntimeError(f"❌ Failed to create/access Space '{space_id}': {e}") from e
 
 
-# ----------------------------
-# Upload files to Space root
-# ----------------------------
-def upload_files(
-    api: HfApi,
-    space_id: str,
-    deploy_dir: Path,
-    files: List[Tuple[str, str]],
-) -> None:
+def resolve_local_file(deploy_dir: Path, repo_root: Path, filename: str) -> Path:
     """
-    Upload local deployment files to Space repo root.
-    Docker Spaces REQUIRE Dockerfile at repo root.
+    Prefer deploy_dir/filename. If missing, fallback to repo_root/filename.
     """
-    for local_name, repo_path in files:
-        local_fp = deploy_dir / local_name
-        if not local_fp.exists():
-            raise FileNotFoundError(f"❌ Missing required file: {local_fp}")
+    p1 = deploy_dir / filename
+    if p1.exists():
+        return p1
 
-        print(f"📤 Uploading {local_fp} → {space_id}/{repo_path}")
+    p2 = repo_root / filename
+    if p2.exists():
+        return p2
+
+    raise FileNotFoundError(
+        "❌ Missing required file: '{f}'\nChecked:\n- {a}\n- {b}".format(
+            f=filename, a=str(p1), b=str(p2)
+        )
+    )
+
+
+def upload_files(api: HfApi, space_id: str, deploy_dir: Path, files: List[Tuple[str, str]]) -> None:
+    """
+    Upload to Space ROOT. Local files may come from deploy_dir or repo root (fallback).
+    """
+    # repo_root = .../predictive-maintenance-mlops (3 parents above this script folder)
+    repo_root = Path(__file__).resolve().parents[2]  # maintenance_predictive
+    repo_root = repo_root.parent                     # repo root
+
+    for local_name, path_in_repo in files:
+        local_fp = resolve_local_file(deploy_dir, repo_root, local_name)
+
+        print(f"📤 Uploading {local_fp} → {space_id}/{path_in_repo}")
         api.upload_file(
             path_or_fileobj=str(local_fp),
-            path_in_repo=repo_path,
+            path_in_repo=path_in_repo,
             repo_id=space_id,
             repo_type="space",
         )
 
 
-# ----------------------------
-# Main
-# ----------------------------
 def main() -> None:
     token = get_hf_token()
     api = HfApi(token=token)
 
     space_id = get_space_id()
-    if not space_id:
-        raise ValueError("❌ Resolved HF_SPACE_ID is empty.")
-
     deploy_dir = Path(os.getenv("DEPLOY_DIR", DEFAULT_DEPLOY_DIR))
 
     files_to_upload = [
@@ -148,8 +129,7 @@ def main() -> None:
     ensure_space_exists(api, space_id, token)
     upload_files(api, space_id, deploy_dir, files_to_upload)
 
-    print("✅ Deployment completed.")
-    print("➡️ Open the Space UI and wait for the Docker build to finish.")
+    print("✅ Deployment completed. Check Space build logs in Hugging Face.")
 
 
 if __name__ == "__main__":
