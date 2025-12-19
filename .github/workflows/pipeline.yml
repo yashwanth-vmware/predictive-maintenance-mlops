@@ -1,0 +1,111 @@
+name: Maintenance Predictive MLOps Pipeline
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+# Prevent concurrent runs from overwriting Space artifacts
+concurrency:
+  group: predictive-maintenance-mlops-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ------------------------------------------------------------
+  # 1) Data Preparation
+  #    - Load raw CSV from Space URL
+  #    - Create train/test splits
+  #    - Upload splits back to the SAME Space under /splits
+  # ------------------------------------------------------------
+  data-prep:
+    name: Data Prep (upload splits to Space)
+    runs-on: ubuntu-latest
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_SPACE_ID: "Yashwanthsairam/predictive-maintenance-mlops"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install pandas scikit-learn huggingface_hub requests joblib
+
+      - name: Run data preparation
+        run: |
+          python maintenance_predictive/model_building/prep.py
+
+  # ------------------------------------------------------------
+  # 2) Model Training
+  #    - Load train/test splits from Space URLs
+  #    - Train model
+  #    - Upload model + metrics to SAME Space under /artifacts
+  # ------------------------------------------------------------
+  model-training:
+    name: Train Model (upload artifacts to Space)
+    needs: data-prep
+    runs-on: ubuntu-latest
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_SPACE_ID: "Yashwanthsairam/predictive-maintenance-mlops"
+      MLFLOW_TRACKING_URI: "file:./mlruns"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install pandas scikit-learn xgboost mlflow joblib huggingface_hub requests
+
+      - name: Train model and upload artifacts
+        run: |
+          python maintenance_predictive/model_building/train.py
+
+      - name: Upload MLflow artifacts (optional)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlruns
+          path: mlruns
+
+  # ------------------------------------------------------------
+  # 3) Deploy to Hugging Face Space
+  #    - Upload Dockerfile, requirements.txt, app.py
+  #    - Files go to Space ROOT (Docker Spaces requirement)
+  # ------------------------------------------------------------
+  deploy-space:
+    name: Deploy Space (Docker)
+    needs: model-training
+    runs-on: ubuntu-latest
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_SPACE_ID: "Yashwanthsairam/predictive-maintenance-mlops"
+      DEPLOY_DIR: "maintenance_predictive/deployment"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install deployment dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install huggingface_hub
+
+      - name: Deploy Docker Space files
+        run: |
+          python maintenance_predictive/deployment/deploy_to_space.py
